@@ -32,7 +32,7 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 
 // --- Notion 資料庫相關函式 ---
 
-// 1. 取得知識庫中所有的 Q&A 列表
+// 1. 取得知識庫中所有的 Q&A 列表 (原始函式)
 const fetchAllQAPairs = async () => {
   let allItems = [];
   let hasMore = true;
@@ -76,7 +76,7 @@ const fetchAllQAPairs = async () => {
   }
 };
 
-// 2. 優化：取得知識庫 (從快取或 Notion)
+// 2. 新增：取得知識庫 (從快取或 Notion)
 const getKnowledgeBase = async () => {
   const now = Date.now();
   // 檢查快取是否存在且未過期
@@ -97,22 +97,22 @@ const getKnowledgeBase = async () => {
 };
 
 
-// --- Gemini AI 相關函式 (優化版) ---
-// AI 只需要比對「問題列表」，不需要讀取「答案」
-const findMatchesWithGemini = async (userQuestion, allQuestions) => {
-  // const knowledgeBaseText = allQAPairs.map(item => `[問題開始]\n${item.question}\n[答案開始]\n${item.answer}\n[項目結束]`).join('\n\n');
-  // const allQuestions = allQAPairs.map(item => item.question);
+// --- Gemini AI 相關函式 (保留「雙軌回覆模式」的邏輯) ---
+const findMatchesWithGemini = async (userQuestion, allQAPairs) => {
+  // AI 會讀取完整的「問題」和「答案」
+  const knowledgeBaseText = allQAPairs.map(item => `[問題開始]\n${item.question}\n[答案開始]\n${item.answer}\n[項目結束]`).join('\n\n');
+  const allQuestions = allQAPairs.map(item => item.question);
 
   const prompt = `
-    您是一個知識庫搜尋專家。請分析以下使用者問題和知識庫中的「問題列表」。
+    您是一個知識庫搜尋專家。請分析以下使用者問題和知識庫。
     您的任務分兩步：
-    1.  首先，判斷「問題列表」中有沒有一個問題，其語意與使用者問題「幾乎完全相同」或能「直接回答」。如果有，請回傳 "EXACT_MATCH::" 加上那個最精準的「原始問題」。
-    2.  如果沒有完全相同的問題，請找出「問題列表」中與使用者問題語意「所有相關」的項目，並回傳 "RELATED_MATCH::" 加上所有匹配的「原始問題」，並用 "|||" 分隔。
+    1.  首先，判斷知識庫中有沒有一個問題，其語意與使用者問題「幾乎完全相同」或能「直接回答」。如果有，請回傳 "EXACT_MATCH::" 加上那個最精準的「原始問題」。
+    2.  如果沒有完全相同的問題，請找出知識庫中與使用者問題語意「所有相關」的項目，並回傳 "RELATED_MATCH::" 加上所有匹配的「原始問題」，並用 "|||" 分隔。
     3.  如果找不到任何相關項目，請回傳 "NO_MATCH"。
 
-    [問題列表開始]
-    ${allQuestions.join("\n")}
-    [問題列表結束]
+    [知識庫開始]
+    ${knowledgeBaseText}
+    [知識庫結束]
 
     使用者問題：「${userQuestion}」
   `;
@@ -168,7 +168,7 @@ const logQuery = async (question, foundAnswer, matchedQuestion) => {
 };
 
 
-// --- Vercel Serverless Function 主體 (優化版) ---
+// --- Vercel Serverless Function 主體 (已加入快取) ---
 module.exports = async (req, res) => {
   // 允許跨域請求 (CORS)
   res.setHeader('Access-Control-Allow-Origin', '*'); // 允許所有來源
@@ -192,14 +192,13 @@ module.exports = async (req, res) => {
 
   try {
     // 1. 優化：從快取或 Notion 取得知識庫
-    const allQAPairs = await getKnowledgeBase();
+    const allQAPairs = await getKnowledgeBase(); // <--- 使用快取函式
     if (allQAPairs.length === 0) {
       return res.status(200).json({ answer: "抱歉，知識庫目前是空的，我無法回答任何問題。" });
     }
 
-    // 2. 優化：只將「問題列表」傳給 AI
-    const allQuestions = allQAPairs.map(item => item.question);
-    const matchResult = await findMatchesWithGemini(question, allQuestions);
+    // 2. AI 讀取完整的 Q&A 列表進行比對
+    const matchResult = await findMatchesWithGemini(question, allQAPairs);
 
     // 3. 根據 AI 回傳的「問題字串」，從完整的 Q&A 列表中找出答案
     if (matchResult.type === 'exact' && matchResult.questions.length > 0) {
